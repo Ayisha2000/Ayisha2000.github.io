@@ -1,0 +1,184 @@
+---
+title: "Random Forest"
+Author: "Ayisha Beauge"
+---
+
+### Library 
+
+```{r}
+#| Label: Library 
+#| include: false
+  
+library(tidymodels)
+library(tidyverse)
+library(here)
+library(doParallel)
+library(janitor)
+library(ranger)
+```
+
+###Loading the data
+
+```{r}
+#| label: Loading-data
+analysis_train <- readRDS(here("models", "data", "analysis_train.rds"))
+analysis_data <- readRDS(here("models", "data", "analysis_data.rds"))
+analysis_folds <- readRDS(here("models", "data", "analysis_folds.rds"))
+```
+
+###SPLIT THE DATA
+
+```{r}
+#| Label: Splitting-data
+set.seed(2023)
+
+Weapon_split <- initial_split(analysis_data, 
+                               strata = WeaponCarryingSchool)
+
+weapon_train <- training(Weapon_split)
+weapon_test <- testing(Weapon_split)
+
+Weapon_split
+```
+###Lets check our work
+
+```{r}
+#| Label: training-data
+weapon_train |> 
+  tabyl(WeaponCarryingSchool)  |> 
+  adorn_pct_formatting(0) |> 
+  adorn_totals()
+```
+```{r}
+#| Label: testing-data
+weapon_test |>  
+  tabyl(WeaponCarryingSchool)  |> 
+  adorn_pct_formatting(0) |> 
+  adorn_totals()
+
+```
+
+```{r}
+#| Label: Creating-Resampling
+set.seed(2023)
+
+cv_weapon <- rsample::vfold_cv(weapon_train, 
+                                v= 5,
+                                strata = WeaponCarryingSchool)
+cv_weapon
+```
+```{r}
+#| Label: the-recipe
+weapon_recipe <- 
+  recipe(formula = WeaponCarryingSchool ~ ., data = weapon_train) |>
+  step_impute_mode(all_nominal_predictors()) |>
+  step_impute_mean(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors())
+```
+
+
+```{r}
+#| Label: Specification
+weapon_spec <- 
+  rand_forest(
+    # the number of predictors to sample at each split
+    mtry = tune(), 
+    # the number of observations needed to keep splitting nodes
+    min_n = tune(),
+    trees = 100) |>  
+  set_mode("classification") |>  
+  set_engine("ranger", 
+             # This is essential for vip()
+             importance = "permutation") 
+
+weapon_spec
+```
+```{r}
+#| Label: Workflow
+weapon_workflow <- 
+  workflow() |> 
+  add_recipe(weapon_recipe) |>  
+  add_model(weapon_spec) 
+
+weapon_workflow
+
+```
+```{r}
+#| Label: Tuning
+
+doParallel::registerDoParallel()
+  
+set.seed(46257)
+  
+weapon_tune <-
+  tune_grid(
+    weapon_workflow,
+    resamples = cv_weapon,
+# grid = 11 says to choose 11 parameter sets automatically 
+    grid = 11)
+
+doParallel::stopImplicitCluster() 
+weapon_tune
+```
+```{r}
+#| Label: tunning-metrics
+collect_metrics(weapon_tune)
+```
+```{r}
+#| Label: visualize-metrics
+
+autoplot(weapon_tune) 
+```
+
+```{r}
+#| Label: best-hyperparameters
+best_weapon <- select_best(weapon_tune, metric = "roc_auc")
+best_weapon
+```
+```{r}
+#| Label: the-Workflow
+weapon_final_wf <- finalize_workflow(weapon_workflow, best_weapon)
+weapon_final_wf
+```
+
+```{r}
+#| Label: the-Workflow
+weapon_fit <- fit(weapon_final_wf, weapon_train)
+weapon_fit
+```
+```{r}
+#| Label: predictions-in-the-training
+weapon_pred <- 
+  augment(weapon_fit, weapon_train) |> 
+  select(WeaponCarryingSchool, .pred_class, .pred_1, .pred_0)
+
+weapon_pred
+```
+
+```{r}
+#| Label: Check-ROC
+#| eval: false
+weapon_roc_plot <- 
+  weapon_pred |> 
+  roc_curve(truth = WeaponCarryingSchool, 
+           .pred_1, 
+           event_level = "second") |> 
+  autoplot()
+
+weapon_roc_plot
+
+saveRDS(weapon_roc_plot, here("models", "roc_graphs", "random_forest.rds"))
+```
+```{r}
+#| echo: false
+weapon_roc_plot <- readRDS(here("models", "roc_graphs", "random_forest.rds"))
+```
+
+
+```{r}
+weapon_pred |> 
+  roc_auc(truth = WeaponCarryingSchool, 
+           .pred_1, 
+           event_level = "second")
+```
+
